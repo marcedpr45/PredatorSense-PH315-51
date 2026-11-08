@@ -13,10 +13,8 @@
   <img src="docs/screenshots/ventiladores.png" width="800" alt="Ventiladores">
 </p>
 
-Reúne las funciones de la versión Windows de PredatorSense y las de la versión Linux anterior
-([mohsunb/PredatorSense], que controlaba el EC). Usa **las mismas llamadas WMI de la BIOS que la
-versión Windows**, sacadas del MOF binario de la propia BIOS. Además corrige el problema principal de
-Windows: **la configuración ahora se guarda y se vuelve a aplicar**.
+Reúne las funciones de la versión Windows de PredatorSense.
+Usa **las mismas llamadas WMI de la BIOS que la versión Windows**, sacadas del MOF binario de la propia BIOS.
 
 ## Funciones
 
