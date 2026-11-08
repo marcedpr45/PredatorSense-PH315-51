@@ -34,8 +34,7 @@ Usa **las mismas llamadas WMI de la BIOS que la versión Windows**, sacadas del 
 | **Abrir al iniciar sesión** (minimizado en la bandeja), activable desde Ajustes | ✅ |
 | Icono en la bandeja con temperatura, uso y RPM de CPU y GPU al pasar el cursor | ✅ |
 | `predatorsense-ctl` para la terminal | ✅ |
-| Perfil de energía (`platform_profile`) | ❌ La BIOS no tiene los métodos WMI 22/23 que usa el kernel; se oculta |
-| Iluminación RGB | ❌ El PH315-51 no tiene teclado RGB |
+
 
 ### Qué mejora respecto a la versión Windows
 
