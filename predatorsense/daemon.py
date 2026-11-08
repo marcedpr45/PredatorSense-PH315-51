@@ -22,7 +22,7 @@ from . import SOCKET_PATH, __version__
 from .config import Config, validate_curve, validate_profile
 from .curve import CurveController
 from .hw import FANS, MODES, HardwareError
-from .hw import sensors
+from .hw import cpufreq, keyboard, sensors, undervolt
 from .hw.ec import EcBackend
 from .hw import nvgpu
 from .hw.hwmon import HwmonBackend
@@ -31,6 +31,7 @@ from .hw.wmi import WmiBackend
 log = logging.getLogger("predatorsense")
 
 HISTORY = 180
+UV_GUARD_SECONDS = 120
 MAX_REQUEST = 64 * 1024
 
 
@@ -79,6 +80,8 @@ class Hardware:
             "lcd_overdrive": bool(wmi_caps.get("lcd_overdrive")),
             "platform_profile": pp["choices"],
             "gpu_oc": nvgpu.available() and sensors.nvidia_pci_device() is not None,
+            "cpu_control": cpufreq.available(),
+            "undervolt": undervolt.available(),
             "acpi_call": bool(self.wmi),
             "ec": bool(self.ec),
             "hwmon": bool(self.hwmon),
@@ -167,12 +170,19 @@ class Daemon:
         self.hw = Hardware(self.config.settings)
         self.gpu_oc = GpuOverclock()
         self.usb_charge = self._read_usb_charge()
+        self.cpu_limited = False
+        self.turbo_warned = False
         self.curves = {fan: self._new_controller() for fan in FANS}
         self.curve_failures = {fan: 0 for fan in FANS}
         self.cpu_usage = sensors.CpuUsage()
         self.history = collections.deque(maxlen=HISTORY)
         self.last_sample = {}
         self.errors = collections.deque(maxlen=20)
+        self.uv_applied, self.uv_error, self.uv_guard_until = None, None, None
+        self.uv_skipped = os.path.exists(self.uv_guard)
+        if self.uv_skipped:
+            self._error("El equipo se detuvo justo después de aplicar el undervolt: no se aplicó al arrancar")
+            self.clear_uv_guard()
         self.running = True
         self.reapply_requested = False
         self.sel = selectors.DefaultSelector()
@@ -216,16 +226,92 @@ class Daemon:
             steps.append(("CoolBoost", lambda: cb.set_coolboost(prof["coolboost"])))
         if prof["platform_profile"] and prof["platform_profile"] in caps["platform_profile"]:
             steps.append(("perfil de energía", lambda: sensors.set_platform_profile(prof["platform_profile"])))
+        if caps["cpu_control"]:
+            steps.append(("CPU", lambda: self.apply_cpu(prof["cpu"])))
+        if caps["undervolt"]:
+            steps.append(("undervolt", self.apply_undervolt))
         if caps["win_key"]:
-            steps.append(("tecla Windows", lambda: self.hw.wmi.set_win_key(prof["win_key"])))
-        if caps["lcd_overdrive"] and prof["lcd_overdrive"] is not None:
-            steps.append(("LCD overdrive", lambda: self.hw.wmi.set_lcd_overdrive(prof["lcd_overdrive"])))
+            steps.append(("tecla Windows", self.apply_win_key))
+        if caps["lcd_overdrive"]:   # la opción se quitó de la app: siempre desactivado
+            steps.append(("LCD overdrive", lambda: self.hw.wmi.set_lcd_overdrive(False)))
         for name, fn in steps:
             try:
                 fn()
             except (HardwareError, OSError, ValueError) as e:
                 self._error(f"No se pudo aplicar {name}: {e}")
         log.info("Perfil '%s' aplicado", self.config.active_name)
+
+    def apply_cpu(self, cpu):
+        if cpu["turbo"] is not None:
+            cpufreq.set_turbo(cpu["turbo"])
+        if cpu["max_mhz"] is not None or self.cpu_limited:
+            cpufreq.set_max_mhz(cpu["max_mhz"])
+        self.cpu_limited = cpu["max_mhz"] is not None
+
+    # --- undervolt: si el equipo se cuelga recién aplicado, no se reaplica al arrancar ------
+    @property
+    def uv_guard(self):
+        return os.path.join(os.path.dirname(self.config.path) or ".", "undervolt.pending")
+
+    def uv_target(self, mv=None):
+        value = self.config.active["cpu"]["undervolt_mv"] if mv is None else mv
+        return undervolt.clamp(value, self.config.settings["undervolt_unlocked"])
+
+    def apply_undervolt(self, mv=None):
+        target = self.uv_target(mv)
+        if self.uv_skipped or target == (self.uv_applied or 0):
+            return
+        if target:
+            with open(self.uv_guard, "w") as f:
+                f.write(str(target))
+            self.uv_guard_until = time.monotonic() + UV_GUARD_SECONDS
+        try:
+            undervolt.apply(target)
+        except HardwareError as e:
+            self.uv_error = str(e)
+            self.clear_uv_guard()
+            raise
+        self.uv_applied, self.uv_error = target, None
+        if not target:
+            self.clear_uv_guard()
+
+    def clear_uv_guard(self):
+        self.uv_guard_until = None
+        try:
+            os.unlink(self.uv_guard)
+        except FileNotFoundError:
+            pass
+
+    def uv_status(self):
+        unlocked = self.config.settings["undervolt_unlocked"]
+        return {"applied": self.uv_applied or 0, "error": self.uv_error, "skipped": self.uv_skipped,
+                "unlocked": unlocked, "target": self.uv_target(),
+                "min_mv": undervolt.UNLOCKED_MIN_MV if unlocked else undervolt.SAFE_MIN_MV}
+
+    def enforce_turbo(self):
+        """Otro servicio puede cambiarlo después del arranque; manda lo guardado en el perfil."""
+        wanted = self.config.active["cpu"]["turbo"]
+        if wanted is None or not cpufreq.available() or cpufreq.turbo_enabled() == wanted:
+            return
+        try:
+            cpufreq.set_turbo(wanted)
+            self.turbo_warned = False
+        except HardwareError as e:
+            if not self.turbo_warned:
+                self._error(str(e))
+            self.turbo_warned = True
+
+    def sync_play_pause(self, blocked):
+        """Sin bloqueo el sistema sigue funcionando: un fallo aquí no debe abortar nada."""
+        try:
+            keyboard.set_play_pause_blocked(blocked)
+        except (HardwareError, OSError) as e:
+            self._error(f"No se pudo cambiar Play/Pausa del teclado interno: {e}")
+
+    def apply_win_key(self):
+        enabled = self.config.settings["win_key"]
+        self.hw.wmi.set_win_key(enabled)
+        self.sync_play_pause(not enabled)
 
     def restore_auto(self):
         if not self.hw.fan:
@@ -253,6 +339,9 @@ class Daemon:
         self.run_curves(sample)
         try:
             self.gpu_oc.update(sample["gpu_state"], sample["on_ac"], self.config.active["gpu_oc"])
+            self.enforce_turbo()
+            if self.uv_guard_until and time.monotonic() >= self.uv_guard_until:
+                self.clear_uv_guard()
         except HardwareError as e:
             self._error(str(e))
 
@@ -299,6 +388,8 @@ class Daemon:
             "version": __version__,
             "capabilities": {**self.hw.capabilities(), "usb_charge": self.usb_charge is not None},
             "usb_charge": self.usb_charge,
+            "cpu": cpufreq.status() if cpufreq.available() else None,
+            "undervolt": self.uv_status() if undervolt.available() else None,
             "active_profile": self.config.active_name,
             "profile": prof,
             "profiles": list(self.config.data["profiles"]),
@@ -360,18 +451,29 @@ class Daemon:
             if state is None:
                 state = sensors.gpu_info().get("state")
             self.gpu_oc.update(state, smp.get("on_ac", sensors.on_ac()), prof["gpu_oc"], force=True)
+        elif cmd == "set_cpu":
+            self._need("cpu_control")
+            changes = {k: req[k] for k in ("turbo", "max_mhz") if k in req}
+            cfg.update_active({"cpu": changes})
+            self.apply_cpu(cfg.active["cpu"])
+        elif cmd == "set_undervolt":
+            self._need("undervolt")
+            mv = self.uv_target(int(req["mv"]))
+            self.uv_skipped = False     # la persona lo está aplicando a propósito
+            self.apply_undervolt(mv)
+            cfg.update_active({"cpu": {"undervolt_mv": mv}})
+        elif cmd == "set_undervolt_unlocked":
+            self._need("undervolt")
+            cfg.update_settings({"undervolt_unlocked": bool(req["enabled"])})
+            self.apply_undervolt()      # al volver a bloquear, recorta al tope seguro
         elif cmd == "set_usb_charge":
             if self.usb_charge is None:
                 raise HardwareError("Función no disponible en este equipo: usb_charge")
             self.usb_charge = self.hw.wmi.set_usb_charge(bool(req["enabled"]), int(req["threshold"]))
         elif cmd == "set_win_key":
             self._need("win_key")
-            self.hw.wmi.set_win_key(bool(req["enabled"]))
-            cfg.update_active({"win_key": bool(req["enabled"])})
-        elif cmd == "set_lcd_overdrive":
-            self._need("lcd_overdrive")
-            self.hw.wmi.set_lcd_overdrive(bool(req["enabled"]))
-            cfg.update_active({"lcd_overdrive": bool(req["enabled"])})
+            cfg.update_settings({"win_key": bool(req["enabled"])})
+            self.apply_win_key()
         elif cmd == "profile_save_as":
             cfg.save_profile_as(req["name"])
             cfg.select_profile(req["name"].strip())
@@ -462,6 +564,8 @@ class Daemon:
         signal.signal(signal.SIGINT, lambda *_: setattr(self, "running", False))
         signal.signal(signal.SIGHUP, lambda *_: setattr(self, "reapply_requested", True))
         srv = self.open_socket()
+        if self.hw.capabilities()["win_key"]:
+            self.sync_play_pause(not self.config.settings["win_key"])
         if self.config.settings["apply_on_boot"]:
             self.apply_profile()
         interval = max(1, int(self.config.settings["curve_interval"]))
@@ -471,6 +575,7 @@ class Daemon:
                 if self.reapply_requested:
                     self.reapply_requested = False
                     log.info("Reaplicando perfil (vuelta de suspensión o petición)")
+                    self.uv_applied = None      # la suspensión borra el MSR
                     for fan in FANS:
                         self.curves[fan] = self._new_controller()
                     self.apply_profile()
@@ -486,6 +591,13 @@ class Daemon:
         finally:
             log.info("Deteniendo: ventiladores a automático y overclock de GPU a cero")
             self.restore_auto()
+            self.sync_play_pause(False)
+            if self.uv_applied:
+                try:
+                    undervolt.apply(0)
+                except HardwareError as e:
+                    log.warning("No se pudo quitar el undervolt: %s", e)
+            self.clear_uv_guard()
             try:
                 self.gpu_oc.reset(sensors.gpu_info().get("state"))
             except (nvgpu.NvmlError, OSError) as e:

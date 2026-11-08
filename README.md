@@ -26,10 +26,11 @@ Windows: **la configuración ahora se guarda y se vuelve a aplicar**.
 | **Curva de ventilador** por temperatura, una por ventilador, con histéresis | ✅ |
 | **CoolBoost™** | ✅ (EC) |
 | **Supervisión**: temperaturas, uso de CPU/GPU, RPM reales, gráficas | ✅ |
-| **Tecla Windows** activar/desactivar | ✅ Probado |
-| **LCD Overdrive** | ✅ |
+| **Tecla Windows** activar/desactivar, en Ajustes | ✅ Misma llamada que el original; al desactivarla también se anula Fn+Play/Pausa del teclado interno, porque la BIOS les da el mismo código |
 | **USB con carga en estado apagado**, con límite de batería de 10/20/30 % (como Acer Quick Access) | ✅ |
 | **Overclock de GPU** con los niveles oficiales de Acer: Normal / Más rápido / Turbo, más Personalizado | ✅ NVML, solo con cargador |
+| **Turbo Boost** de la CPU activable y **límite de frecuencia máxima** por perfil, en Overclock | ✅ intel_pstate; el i7-8750H no admite subir frecuencia |
+| **Undervolt** de núcleo y caché con tope de -125 mV; el tope se libera en Ajustes bajo tu riesgo | Según la BIOS: cada valor se comprueba al aplicarlo |
 | **Perfiles**: crear, renombrar, borrar, importar/exportar | ✅ |
 | **Reaplicar al arrancar y al volver de suspensión** | ✅ |
 | **Abrir al iniciar sesión** (minimizado en la bandeja), activable desde Ajustes | ✅ |
@@ -54,8 +55,8 @@ Windows: **la configuración ahora se guarda y se vuelve a aplicar**.
 | Supervisión | Overclock de GPU |
 |---|---|
 | ![Supervisión](docs/screenshots/supervision.png) | ![Overclock](docs/screenshots/overclock.png) |
-| **Teclado y pantalla** | **Ajustes** |
-| ![Teclado](docs/screenshots/teclado.png) | ![Ajustes](docs/screenshots/ajustes.png) |
+| **Ajustes** | |
+| ![Ajustes](docs/screenshots/ajustes.png) | |
 
 ## Instalación (Arch / CachyOS)
 
@@ -87,7 +88,9 @@ predatorsense-ctl status
 predatorsense-ctl fan all max          # auto | max | custom <0-100>
 predatorsense-ctl fan cpu custom 60
 predatorsense-ctl coolboost on
-predatorsense-ctl winkey on            # off = Super envía Play/Pausa
+predatorsense-ctl winkey on            # off = Super no hace nada
+predatorsense-ctl turbo off            # activa/desactiva Intel Turbo Boost
+predatorsense-ctl cpu-max 3000         # limita la CPU a 3000 MHz (off quita el límite)
 predatorsense-ctl usb on 20            # carga USB apagado; en batería se detiene al 20 %
 predatorsense-ctl profiles
 predatorsense-ctl profile "Juego"
@@ -114,7 +117,7 @@ comprimido con MRCI y se lee con `tools/bmof_decompress.py`:
 
 | ID | Método | Uso |
 |---|---|---|
-| 1 | SetGamingProfile | tecla Windows, LCD Overdrive |
+| 1 | SetGamingProfile | tecla Windows, LCD Overdrive (siempre desactivado) |
 | 5 | GetGamingSysInfo | temperaturas y RPM |
 | 14 | SetGamingFanBehavior | modo de ventilador |
 | 16 | SetGamingFanSpeed | velocidad de ventilador |
@@ -139,6 +142,15 @@ así que los +50/+100 MHz de Acer equivalen aquí a +100/+200:
 | Personalizado | −200…+250 MHz | −500…+800 MHz | — |
 
 Solo se aplica con el cargador conectado y se reaplica cuando la GPU sale de reposo.
+
+### Undervolt
+
+Usa el MSR `0x150`, igual que ThrottleStop. El tope por defecto, -125 mV, es el punto de partida habitual
+entre usuarios del i7-8750H; muchos pierden estabilidad en la caché por debajo de ese valor. Cada chip es
+distinto, así que prueba bajo carga antes de confiar en un valor. El tope liberado llega a -250 mV.
+
+Si el equipo se detiene en los 2 minutos siguientes a aplicarlo, el servicio no lo reaplica al arrancar.
+Un cuelgue más tardío no se detecta. Escribir ese MSR marca el kernel como *tainted* (`S`).
 
 ## Desarrollo
 

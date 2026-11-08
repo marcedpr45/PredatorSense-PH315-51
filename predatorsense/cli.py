@@ -24,6 +24,10 @@ def main(argv=None):
     c.add_argument("state", choices=["on", "off"])
     w = sub.add_parser("winkey", help="Activar/desactivar la tecla Windows")
     w.add_argument("state", choices=["on", "off"])
+    t = sub.add_parser("turbo", help="Activar/desactivar Intel Turbo Boost")
+    t.add_argument("state", choices=["on", "off"])
+    m = sub.add_parser("cpu-max", help="Limitar la frecuencia máxima de la CPU")
+    m.add_argument("mhz", help="Frecuencia en MHz, u off para quitar el límite")
     u = sub.add_parser("usb", help="Carga USB con el equipo apagado")
     u.add_argument("state", choices=["on", "off"])
     u.add_argument("threshold", nargs="?", type=int, choices=[10, 20, 30],
@@ -50,6 +54,10 @@ def main(argv=None):
                 print(f"  {fan.upper()}: {mode:<18} temp {fmt(smp.get(fan + '_temp'), '°C'):>7}"
                       f"  rpm {fmt(smp.get(fan + '_rpm'))}")
             print(f"CoolBoost: {'sí' if s['profile']['coolboost'] else 'no'}")
+            if s.get("cpu"):
+                limit = s["profile"]["cpu"]["max_mhz"]
+                print(f"Turbo Boost: {'sí' if s['cpu']['turbo'] else 'no'}"
+                      f"   Límite CPU: {str(limit) + ' MHz' if limit else 'ninguno'}")
             if s.get("usb_charge"):
                 print(f"Carga USB apagado: {'sí' if s['usb_charge']['enabled'] else 'no'}"
                       f" (batería mínima {s['usb_charge']['threshold']}%)")
@@ -71,7 +79,13 @@ def main(argv=None):
         elif a.cmd == "winkey":
             request("set_win_key", enabled=a.state == "on")
             print("Tecla Windows " + ("activada." if a.state == "on" else
-                                      "desactivada (Super enviará Play/Pausa). Se mantiene tras reiniciar."))
+                                      "desactivada (Fn+Play/Pausa del teclado interno tampoco funcionará)."))
+        elif a.cmd == "turbo":
+            request("set_cpu", turbo=a.state == "on")
+            print("Turbo Boost " + ("activado." if a.state == "on" else "desactivado."))
+        elif a.cmd == "cpu-max":
+            request("set_cpu", max_mhz=None if a.mhz == "off" else int(a.mhz))
+            print("Límite de CPU quitado." if a.mhz == "off" else f"CPU limitada a {a.mhz} MHz.")
         elif a.cmd == "usb":
             cur = request("status").get("usb_charge") or {}
             r = request("set_usb_charge", enabled=a.state == "on",

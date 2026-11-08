@@ -49,9 +49,27 @@ class FakeHardware(daemon.Hardware):
                 {"state": "active", "temp": 48 + 8 * math.sin(t / 30), "usage": 30 + 25 * math.sin(t / 9), "clock": 1400})
 
 
+class FakeCpu:
+    turbo = False
+    limit = None
+    @classmethod
+    def available(cls): return True
+    @classmethod
+    def turbo_enabled(cls): return cls.turbo
+    @classmethod
+    def set_turbo(cls, on): cls.turbo = on
+    @classmethod
+    def set_max_mhz(cls, mhz): cls.limit = mhz
+    @classmethod
+    def status(cls): return {"min_mhz": 800, "max_mhz": 4100, "base_mhz": 2200, "turbo": cls.turbo}
+
+
 if __name__ == "__main__":
     sock = sys.argv[1] if len(sys.argv) > 1 else "/tmp/predatorsense-dev.sock"
     daemon.Hardware = FakeHardware
+    daemon.cpufreq = FakeCpu
+    daemon.undervolt.available = lambda: True
+    daemon.undervolt.apply = lambda mv: None
     d = daemon.Daemon(os.path.join(tempfile.mkdtemp(), "config.json"), sock)
     d.config.settings["curve_interval"] = 1
 

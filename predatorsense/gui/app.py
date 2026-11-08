@@ -315,58 +315,17 @@ class FanPage(Page):
         self.editor.set_current_temp(t)
 
 
-# --- Teclado y pantalla ------------------------------------------------------
-class KeyboardPage(Page):
-    def __init__(self, win):
-        super().__init__(win, "Teclado y pantalla")
-        self.note = label("", "warn")
-        self.layout_.addWidget(self.note)
-        c = card()
-        v = QVBoxLayout(c)
-        self.win_key = QCheckBox("Tecla Windows y Menú activadas")
-        self.win_key.clicked.connect(lambda on: self.call("set_win_key", enabled=on))
-        v.addWidget(self.win_key)
-        v.addWidget(label("Es el mismo ajuste que en la versión Windows dejó la tecla Super enviando Play/Pausa. "
-                          "Aquí queda guardado y se reaplica al arrancar.", "muted"))
-        self.overdrive = QCheckBox("LCD Overdrive (menos estela en la pantalla)")
-        self.overdrive.clicked.connect(lambda on: self.call("set_lcd_overdrive", enabled=on))
-        v.addWidget(self.overdrive)
-        self.layout_.addWidget(c)
-
-        self.layout_.addStretch()
-
-    def refresh(self, status):
-        caps = status["capabilities"]
-        prof = status["profile"]
-        missing = [n for k, n in (("win_key", "tecla Windows"), ("lcd_overdrive", "LCD Overdrive"))
-                   if not caps[k]]
-        if not caps["acpi_call"]:
-            self.note.setText("Estas funciones necesitan el módulo acpi_call (paquete acpi_call-dkms).")
-        elif missing:
-            self.note.setText("Falta confirmar el método WMI de: " + ", ".join(missing) +
-                              ". Corre tools/probe.sh para detectarlo.")
-        else:
-            self.note.setText("")
-        self.note.setVisible(bool(self.note.text()))
-        self.win_key.setEnabled(caps["win_key"])
-        self.win_key.setChecked(prof["win_key"])
-        self.overdrive.setEnabled(caps["lcd_overdrive"])
-        self.overdrive.setChecked(bool(prof["lcd_overdrive"]))
-
-
 # --- Overclock -----------------------------------------------------------------
 OC_LABELS = [("normal", "Normal"), ("faster", "Más rápido"), ("turbo", "Turbo"), ("custom", "Personalizado")]
 
 
 class OverclockPage(Page):
     def __init__(self, win):
-        super().__init__(win, "Overclock de GPU")
-        self.layout_.addWidget(label(
-            "Solo se aplica con el cargador conectado; en batería se vuelve a Normal automáticamente.", "warn"))
+        super().__init__(win, "Overclock")
         c = card()
         v = QVBoxLayout(c)
         head = QHBoxLayout()
-        head.addWidget(label("Nivel", "h2"))
+        head.addWidget(label("GPU", "h2"))
         head.addStretch()
         self.state = label("", "muted")
         self.state.setWordWrap(False)
@@ -387,11 +346,13 @@ class OverclockPage(Page):
         self.preset = label("", "muted")
         self.preset.setWordWrap(False)
         v.addWidget(self.preset)
+        v.addWidget(label("Solo se aplica con el cargador conectado; en batería se vuelve a Normal "
+                          "automáticamente.", "warn"))
         self.layout_.addWidget(c)
 
         cc = card()
         g = QGridLayout(cc)
-        g.addWidget(label("Personalizado", "h2"), 0, 0, 1, 3)
+        g.addWidget(label("GPU personalizado", "h2"), 0, 0, 1, 3)
         self.sliders = {}
         for r, (key, text) in enumerate((("core", "Núcleo"), ("mem", "Memoria")), start=1):
             g.addWidget(QLabel(text), r, 0)
@@ -413,8 +374,103 @@ class OverclockPage(Page):
         ic = card()
         QVBoxLayout(ic).addWidget(self.info)
         self.layout_.addWidget(ic)
+        self.cpu_card = card()
+        cg = QGridLayout(self.cpu_card)
+        cg.addWidget(label("Procesador", "h2"), 0, 0, 1, 3)
+        self.turbo = QCheckBox("Intel Turbo Boost")
+        self.turbo.clicked.connect(lambda on: self.call("set_cpu", turbo=on))
+        cg.addWidget(self.turbo, 1, 0, 1, 3)
+        cg.addWidget(QLabel("Frecuencia máxima"), 2, 0)
+        self.cpu_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cpu_slider.setPageStep(2)
+        self.cpu_value = QLabel("")
+        self.cpu_value.setMinimumWidth(100)
+        self.cpu_debounce = QTimer(self)
+        self.cpu_debounce.setSingleShot(True)
+        self.cpu_debounce.setInterval(400)
+        self.cpu_debounce.timeout.connect(self.send_cpu_limit)
+        self.cpu_slider.valueChanged.connect(self.on_cpu_slider)
+        cg.addWidget(self.cpu_slider, 2, 1)
+        cg.addWidget(self.cpu_value, 2, 2)
+        self.cpu_note = label("", "muted")
+        cg.addWidget(self.cpu_note, 3, 0, 1, 3)
+        self.uv_label = QLabel("Undervolt (núcleo y caché)")
+        cg.addWidget(self.uv_label, 4, 0)
+        self.uv_slider = QSlider(Qt.Orientation.Horizontal)
+        self.uv_slider.setSingleStep(5)
+        self.uv_slider.setPageStep(25)
+        self.uv_value = QLabel("0 mV")
+        self.uv_slider.valueChanged.connect(lambda x: self.uv_value.setText(f"{self.uv_snapped(x)} mV"))
+        self.uv_slider.actionTriggered.connect(lambda _: setattr(self, "_uv_dirty", True))
+        cg.addWidget(self.uv_slider, 4, 1)
+        cg.addWidget(self.uv_value, 4, 2)
+        self.uv_apply = QPushButton("Aplicar undervolt")
+        self.uv_apply.setProperty("class", "primary")
+        self.uv_apply.clicked.connect(self.send_undervolt)
+        cg.addWidget(self.uv_apply, 5, 2)
+        self.uv_state = label("", "muted")
+        cg.addWidget(self.uv_state, 5, 0, 1, 2)
+        self._uv_dirty = False
+        self.layout_.addWidget(self.cpu_card)
         self.layout_.addStretch()
         self._loaded = False
+        self._cpu_max = 41
+
+    def show_cpu_value(self, value):
+        self.cpu_value.setText("Sin límite" if value >= self._cpu_max else f"{value * 100} MHz")
+
+    def on_cpu_slider(self, value):
+        self.show_cpu_value(value)
+        self.cpu_debounce.start()
+
+    def send_cpu_limit(self):
+        value = self.cpu_slider.value()
+        self.call("set_cpu", max_mhz=None if value >= self._cpu_max else value * 100)
+
+    @staticmethod
+    def uv_snapped(value):
+        return -(abs(value) // 5 * 5)
+
+    def send_undervolt(self):
+        self._uv_dirty = False
+        self.call("set_undervolt", mv=self.uv_snapped(self.uv_slider.value()))
+
+    def refresh_undervolt(self, status):
+        uv = status.get("undervolt")
+        for w in (self.uv_label, self.uv_slider, self.uv_value, self.uv_apply, self.uv_state):
+            w.setVisible(uv is not None)
+        if not uv:
+            return
+        self.uv_slider.setRange(uv["min_mv"], 0)
+        if not self._uv_dirty and not self.uv_slider.isSliderDown():
+            self.uv_slider.setValue(uv["target"])
+        if uv["error"]:
+            text = uv["error"]
+        elif uv["skipped"]:
+            text = "El equipo se detuvo justo después de aplicarlo: no se aplicó al arrancar. Prueba un valor menor."
+        else:
+            text = f"Aplicado: {uv['applied']} mV" + ("   ·   Tope liberado en Ajustes" if uv["unlocked"] else
+                                                      f"   ·   Tope seguro: {uv['min_mv']} mV")
+        self.uv_state.setText(text)
+
+    def refresh_cpu(self, status):
+        self.refresh_undervolt(status)
+        cpu = status.get("cpu")
+        self.cpu_card.setVisible(cpu is not None)
+        if not cpu:
+            return
+        self.turbo.setChecked(cpu["turbo"])
+        self._cpu_max = cpu["max_mhz"] // 100
+        if not self.cpu_slider.isSliderDown() and not self.cpu_debounce.isActive():
+            limit = status["profile"]["cpu"]["max_mhz"]
+            self.cpu_slider.blockSignals(True)
+            self.cpu_slider.setRange(cpu["min_mhz"] // 100, self._cpu_max)
+            self.cpu_slider.setValue(self._cpu_max if limit is None else limit // 100)
+            self.cpu_slider.blockSignals(False)
+            self.show_cpu_value(self.cpu_slider.value())
+        self.cpu_note.setText(
+            (f"Con Turbo Boost desactivado, la CPU no pasa de {cpu['base_mhz']} MHz. " if not cpu["turbo"] else "")
+            + "Este procesador tiene el multiplicador bloqueado: solo se puede bajar su frecuencia.")
 
     def set_level(self, level):
         args = {"level": level}
@@ -423,6 +479,7 @@ class OverclockPage(Page):
         self.call("set_gpu_oc", **args)
 
     def refresh(self, status):
+        self.refresh_cpu(status)
         caps = status["capabilities"]
         oc = status.get("gpu_oc") or {}
         prof = status["profile"]["gpu_oc"]
@@ -576,6 +633,9 @@ class SettingsPage(Page):
         self.boot = QCheckBox("Aplicar el perfil activo al iniciar el sistema (lo hace el servicio, sin abrir la ventana)")
         self.boot.clicked.connect(lambda on: self.set(apply_on_boot=on))
         g.addWidget(self.boot, r, 0, 1, 2); r += 1
+        self.win_key = QCheckBox("Tecla Windows activada (al desactivarla, Fn+Play/Pausa del teclado interno tampoco funciona)")
+        self.win_key.clicked.connect(lambda on: self.call("set_win_key", enabled=on))
+        g.addWidget(self.win_key, r, 0, 1, 2); r += 1
         g.addWidget(QLabel("Unidad de temperatura"), r, 0)
         self.unit = QComboBox()
         self.unit.addItem("Celsius (°C)", "C")
@@ -602,6 +662,9 @@ class SettingsPage(Page):
         self.src.activated.connect(lambda _: self.set(gpu_curve_source=self.src.currentData()))
         g.addWidget(self.src, r, 1); r += 1
         self.layout_.addWidget(c)
+        self.uv_unlock = QCheckBox("Liberar el tope de undervolt (bajo tu propio riesgo)")
+        self.uv_unlock.clicked.connect(self.toggle_uv_unlock)
+        g.addWidget(self.uv_unlock, r, 0, 1, 2); r += 1
         self.usb_card = card()
         u = QGridLayout(self.usb_card)
         self.usb = QCheckBox("USB con carga en estado apagado")
@@ -626,6 +689,18 @@ class SettingsPage(Page):
 
     def set(self, **kw):
         self.call("settings_update", settings=kw)
+
+    def toggle_uv_unlock(self, on):
+        if on and QMessageBox.warning(
+                self, "Liberar el tope de undervolt",
+                "Sin el tope de -125 mV podrás bajar hasta -250 mV. Valores así suelen congelar o reiniciar "
+                "el equipo, y pueden provocar pérdida de datos si ocurre mientras se guarda algo.\n\n"
+                "Lo activas bajo tu propio riesgo. ¿Continuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            self.uv_unlock.setChecked(False)
+            return
+        self.call("set_undervolt_unlocked", enabled=on)
 
     def set_usb(self):
         self.call("set_usb_charge", enabled=self.usb.isChecked(), threshold=self.usb_level.currentData())
@@ -652,6 +727,12 @@ class SettingsPage(Page):
         self.src.setCurrentIndex(0 if s["gpu_curve_source"] == "gpu" else 1)
         for w in (self.boot, self.unit, self.hyst, self.interval, self.interp, self.src):
             w.blockSignals(False)
+        uv = status.get("undervolt")
+        self.uv_unlock.setVisible(uv is not None)
+        if uv:
+            self.uv_unlock.setChecked(uv["unlocked"])
+        self.win_key.setEnabled(status["capabilities"]["win_key"])
+        self.win_key.setChecked(s["win_key"])
         usb = status.get("usb_charge")
         self.usb_card.setVisible(usb is not None)
         if usb:
@@ -666,7 +747,7 @@ class SettingsPage(Page):
             f"Backend de ventiladores: {caps['fan_backend']}\n"
             f"hwmon acer-wmi: {yn(caps['hwmon'])} · acpi_call: {yn(caps['acpi_call'])} · EC: {yn(caps['ec'])}\n"
             f"RPM: {yn(caps['fan_rpm'])} · CoolBoost: {yn(caps['coolboost'])} · Tecla Windows: {yn(caps['win_key'])}"
-            f" · Overdrive: {yn(caps['lcd_overdrive'])}\n"
+            "\n"
             f"Configuración: /etc/predatorsense-linux/config.json")
 
 
@@ -700,10 +781,9 @@ class MainWindow(QMainWindow):
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ov.addWidget(hint)
         ov.addStretch()
-        self.pages = [MonitorPage(self), FanPage(self), OverclockPage(self), KeyboardPage(self),
-                      ProfilesPage(self), SettingsPage(self)]
-        for name, page in zip(("Supervisión", "Ventiladores", "Overclock", "Teclado y pantalla", "Perfiles",
-                               "Ajustes"), self.pages):
+        self.pages = [MonitorPage(self), FanPage(self), OverclockPage(self), ProfilesPage(self),
+                      SettingsPage(self)]
+        for name, page in zip(("Supervisión", "Ventiladores", "Overclock", "Perfiles", "Ajustes"), self.pages):
             self.nav.addItem(name)
             self.stack.addWidget(page)
         self.stack.addWidget(self.offline)

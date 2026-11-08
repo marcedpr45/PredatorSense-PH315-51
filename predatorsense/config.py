@@ -23,9 +23,9 @@ DEFAULT_PROFILE = {
     "curves": {fan: copy.deepcopy(DEFAULT_CURVE) for fan in FANS},
     "coolboost": False,
     "platform_profile": None,
-    "win_key": True,
-    "lcd_overdrive": None,
     "gpu_oc": {"level": "normal", "core": 0, "mem": 0},
+    "cpu": {"turbo": None, "max_mhz": None,   # None: no tocar lo que ya tenga el sistema
+            "undervolt_mv": 0},
 }
 
 DEFAULT_CONFIG = {
@@ -34,6 +34,8 @@ DEFAULT_CONFIG = {
     "profiles": {"Predeterminado": copy.deepcopy(DEFAULT_PROFILE)},
     "settings": {
         "apply_on_boot": True,
+        "win_key": True,            # global, como WinAndMenuKey en la versión Windows
+        "undervolt_unlocked": False,
         "backend": "auto",          # auto | hwmon | wmi | ec
         "force_ec": False,
         "temp_unit": "C",
@@ -86,15 +88,18 @@ def validate_profile(profile):
         f["percent"] = max(0, min(100, int(f["percent"])))
         p["curve_enabled"][fan] = bool(p["curve_enabled"][fan])
         p["curves"][fan] = validate_curve(p["curves"][fan])
-    from .hw import nvgpu
+    from .hw import nvgpu, undervolt
     oc = p["gpu_oc"]
     if oc["level"] not in (*nvgpu.LEVELS, "custom"):
         raise ValueError(f"Nivel de overclock inválido: {oc['level']}")
     oc["core"], oc["mem"] = nvgpu.offsets_for("custom", oc["core"], oc["mem"])
+    cpu = p["cpu"]
+    if cpu["turbo"] is not None:
+        cpu["turbo"] = bool(cpu["turbo"])
+    if cpu["max_mhz"] is not None:
+        cpu["max_mhz"] = max(400, min(6000, int(cpu["max_mhz"])))
+    cpu["undervolt_mv"] = undervolt.clamp(cpu["undervolt_mv"], unlocked=True)
     p["coolboost"] = bool(p["coolboost"])
-    p["win_key"] = bool(p["win_key"])
-    if p["lcd_overdrive"] is not None:
-        p["lcd_overdrive"] = bool(p["lcd_overdrive"])
     return p
 
 
@@ -124,6 +129,10 @@ class Config:
                 pass
             return copy.deepcopy(DEFAULT_CONFIG)
         data = _merge(DEFAULT_CONFIG, raw)
+        if "win_key" not in (raw.get("settings") or {}):
+            # Antes era un ajuste por perfil: se conserva el valor del perfil activo.
+            old = (raw.get("profiles") or {}).get(raw.get("active_profile"), {}).get("win_key", True)
+            data["settings"]["win_key"] = bool(old)
         profiles = {}
         for name, prof in (raw.get("profiles") or {}).items():
             try:

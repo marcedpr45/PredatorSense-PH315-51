@@ -113,14 +113,14 @@ class ConfigTest(unittest.TestCase):
 
     def test_persists_across_reload(self):
         c = cfgmod.Config(self.path)
-        c.update_active({"fans": {"cpu": {"mode": "custom", "percent": 65}}, "win_key": False})
+        c.update_active({"fans": {"cpu": {"mode": "custom", "percent": 65}}, "coolboost": True})
         c.save_profile_as("Juego")
         c.select_profile("Juego")
         c.save()
         c2 = cfgmod.Config(self.path)
         self.assertEqual(c2.active_name, "Juego")
         self.assertEqual(c2.active["fans"]["cpu"], {"mode": "custom", "percent": 65})
-        self.assertFalse(c2.active["win_key"])
+        self.assertTrue(c2.active["coolboost"])
         self.assertEqual(oct(os.stat(self.path).st_mode & 0o777), "0o644")
         self.assertEqual([f for f in os.listdir(self.dir) if f.startswith(".config-")], [])
 
@@ -226,6 +226,82 @@ class FakeNvml:
         return {"core": 0, "mem": 0}
 
 
+class CpuFreqTest(unittest.TestCase):
+    def setUp(self):
+        from predatorsense.hw import cpufreq
+        self.cf, self.root = cpufreq, tempfile.mkdtemp()
+        os.makedirs(self.root + "/intel_pstate")
+        for p in ("policy0", "policy6"):
+            os.makedirs(f"{self.root}/cpufreq/{p}")
+            for name, value in (("cpuinfo_min_freq", 800000), ("base_frequency", 2200000), ("scaling_max_freq", 2200000)):
+                with open(f"{self.root}/cpufreq/{p}/{name}", "w") as f:
+                    f.write(str(value))
+        for name, value in (("no_turbo", 1), ("num_pstates", 34)):
+            with open(f"{self.root}/intel_pstate/{name}", "w") as f:
+                f.write(str(value))
+        patcher = mock.patch.object(cpufreq, "CPU_ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def read(self, rel):
+        with open(f"{self.root}/{rel}") as f:
+            return f.read()
+
+    def test_limits_ignore_turbo_state(self):
+        self.assertEqual(self.cf.status(), {"min_mhz": 800, "max_mhz": 4100, "base_mhz": 2200, "turbo": False})
+
+    def test_set_turbo_inverts_no_turbo(self):
+        self.cf.set_turbo(True)
+        self.assertEqual(self.read("intel_pstate/no_turbo"), "0")
+        self.assertTrue(self.cf.turbo_enabled())
+
+    def test_limit_is_clamped_and_applies_to_all_policies(self):
+        self.cf.set_max_mhz(3000)
+        self.assertEqual(self.read("cpufreq/policy6/scaling_max_freq"), "3000000")
+        self.cf.set_max_mhz(100)
+        self.assertEqual(self.read("cpufreq/policy0/scaling_max_freq"), "800000")
+        self.cf.set_max_mhz(None)
+        self.assertEqual(self.read("cpufreq/policy0/scaling_max_freq"), "4100000")
+
+    def test_profile_defaults_leave_system_untouched(self):
+        self.assertEqual(cfgmod.validate_profile({})["cpu"], {"turbo": None, "max_mhz": None, "undervolt_mv": 0})
+
+
+class UndervoltTest(unittest.TestCase):
+    def test_encoding_matches_known_values(self):
+        from predatorsense.hw import undervolt as uv
+        self.assertEqual(uv.write_request(0, -125), 0x80000011F0000000)
+        self.assertEqual(uv.write_request(2, -125), 0x80000211F0000000)
+        self.assertEqual(uv.read_request(2), 0x8000021000000000)
+        self.assertEqual(uv.decode_offset(uv.encode_offset(-125)), -125)
+        self.assertEqual(uv.decode_offset(0), 0)
+
+    def test_clamp(self):
+        from predatorsense.hw import undervolt as uv
+        self.assertEqual(uv.clamp(-200, unlocked=False), -125)
+        self.assertEqual(uv.clamp(-200, unlocked=True), -200)
+        self.assertEqual(uv.clamp(-999, unlocked=True), -250)
+        self.assertEqual(uv.clamp(50, unlocked=True), 0)
+
+
+class WinKeySettingTest(unittest.TestCase):
+    def test_keymap_entry(self):
+        from predatorsense.hw import keyboard
+        e = keyboard.keymap_entry(0xA2, 164)
+        self.assertEqual(len(e), 40)
+        self.assertEqual(e[:12], bytes([0, 4, 0, 0, 164, 0, 0, 0, 0xA2, 0, 0, 0]))
+
+    def test_migrates_from_active_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.json")
+            with open(path, "w") as f:
+                json.dump({"active_profile": "A", "profiles": {"A": {"win_key": False, "lcd_overdrive": True}}}, f)
+            c = cfgmod.Config(path)
+            self.assertFalse(c.settings["win_key"])
+            self.assertNotIn("win_key", c.active)
+            self.assertNotIn("lcd_overdrive", c.active)
+
+
 class UsbChargeTest(unittest.TestCase):
     def test_encoding_matches_quick_access(self):
         self.assertEqual(wmi.usb_charge_arg(True, 30), 4 | (15 << 8) | (30 << 16))
@@ -295,6 +371,25 @@ class DaemonTest(unittest.TestCase):
         with self.assertRaises(HardwareError):
             self.d.handle({"cmd": "set_win_key", "enabled": False})
 
+    def test_undervolt_is_capped_and_guarded(self):
+        with mock.patch.object(daemon.undervolt, "available", return_value=True), \
+                mock.patch.object(daemon.undervolt, "apply") as apply:
+            self.d.handle({"cmd": "set_undervolt", "mv": -200})
+            apply.assert_called_once_with(-125)
+            self.assertTrue(os.path.exists(self.d.uv_guard))
+            self.d.handle({"cmd": "set_undervolt_unlocked", "enabled": True})
+            self.d.handle({"cmd": "set_undervolt", "mv": -200})
+            self.assertEqual(apply.call_args.args, (-200,))
+            self.d.handle({"cmd": "set_undervolt_unlocked", "enabled": False})
+            self.assertEqual(apply.call_args.args, (-125,))
+            # Un cuelgue dejó la marca: al arrancar no se reaplica
+            d2 = daemon.Daemon(self.d.config.path, self.d.socket_path)
+            self.assertTrue(d2.uv_skipped)
+            apply.reset_mock()
+            d2.apply_undervolt()
+            apply.assert_not_called()
+            self.assertFalse(os.path.exists(d2.uv_guard))
+
     def test_curve_runs_and_falls_back_to_auto(self):
         self.d.handle({"cmd": "set_curve", "fan": "gpu", "points": [[40, 20], [80, 100]], "enabled": True})
         self.d.sample()
@@ -317,11 +412,12 @@ class DaemonTest(unittest.TestCase):
         t = threading.Thread(target=self.d.run, daemon=True)
         with mock.patch("signal.signal"):
             t.start()
-            for _ in range(50):
-                if os.path.exists(self.sock):
+            for _ in range(50):     # el socket existe un instante antes de aceptar conexiones
+                try:
+                    st = request("status", socket_path=self.sock)
                     break
-                time.sleep(0.05)
-            st = request("status", socket_path=self.sock)
+                except ServiceError:
+                    time.sleep(0.05)
             self.assertEqual(st["capabilities"]["fan_backend"], "fake")
             with self.assertRaises(ServiceError):
                 request("nope", socket_path=self.sock)
