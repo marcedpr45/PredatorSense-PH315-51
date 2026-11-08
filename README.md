@@ -165,5 +165,11 @@ PREDATORSENSE_SOCKET=/tmp/ps.sock python3 -m predatorsense.gui.app
 - Predator y su logo son marcas de Acer Inc. Este proyecto no está afiliado a Acer.
 - Cambiar ventiladores, llamar métodos ACPI o hacer overclock es bajo tu responsabilidad.
 
+## Licencia
+
+El código se publica bajo la [licencia MIT](LICENSE): puedes usarlo, modificarlo y redistribuirlo
+libremente conservando el aviso de copyright. La licencia no cubre el logo de Predator de `data/icons/`
+ni las capturas que lo muestran, que siguen siendo marcas de Acer Inc.
+
 [mohsunb/PredatorSense]: https://github.com/mohsunb/PredatorSense
 [boazvdwansem/PredatorSenseDecomp]: https://github.com/boazvdwansem/PredatorSenseDecomp
