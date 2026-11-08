@@ -1,0 +1,5 @@
+#!/usr/bin/python3 -s
+import os, sys
+sys.path.insert(0, os.environ.get("PREDATORSENSE_HOME") if os.geteuid() != 0 and os.environ.get("PREDATORSENSE_HOME") else "/opt/predatorsense-linux")
+from predatorsense.daemon import main
+sys.exit(main())

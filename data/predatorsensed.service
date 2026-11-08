@@ -1,0 +1,16 @@
+[Unit]
+Description=PredatorSense Linux (control de ventiladores y ajustes Acer Predator)
+After=systemd-modules-load.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/predatorsensed
+RuntimeDirectory=predatorsense
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=3
+# Al detenerse, el servicio deja los ventiladores en automático.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

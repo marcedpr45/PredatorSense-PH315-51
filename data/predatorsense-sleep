@@ -1,0 +1,6 @@
+#!/bin/sh
+# Hook de systemd-sleep: al volver de suspensión/hibernación, reaplicar el perfil.
+# (El EC suele volver a valores de fábrica al despertar.)
+case "$1" in
+    post) systemctl kill --signal=HUP predatorsensed.service 2>/dev/null || true ;;
+esac

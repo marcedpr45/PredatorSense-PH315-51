@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PredatorSense Linux
+Comment=Ventiladores, sensores, teclado y perfiles para Acer Predator
+Exec=predatorsense
+Icon=predatorsense-linux
+Categories=System;Settings;HardwareSettings;
+Keywords=fan;ventilador;predator;acer;temperatura;
+Terminal=false
