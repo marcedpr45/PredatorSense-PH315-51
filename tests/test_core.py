@@ -226,6 +226,24 @@ class FakeNvml:
         return {"core": 0, "mem": 0}
 
 
+class UsbChargeTest(unittest.TestCase):
+    def test_encoding_matches_quick_access(self):
+        self.assertEqual(wmi.usb_charge_arg(True, 30), 4 | (15 << 8) | (30 << 16))
+        self.assertEqual(wmi.usb_charge_arg(False, 10), 4 | (31 << 8) | (10 << 16))
+        with self.assertRaises(ValueError):
+            wmi.usb_charge_arg(True, 50)
+
+    def test_parse(self):
+        self.assertEqual(wmi.parse_usb_charge((20 << 16) | (15 << 8)), {"enabled": True, "threshold": 20})
+        self.assertEqual(wmi.parse_usb_charge((10 << 16) | (31 << 8)), {"enabled": False, "threshold": 10})
+        with self.assertRaises(wmi.HardwareError):
+            wmi.parse_usb_charge(1)
+
+    def test_call_uses_apge_method(self):
+        self.assertEqual(wmi.build_call(wmi.APGE_METHOD_PATH, wmi.APGE_GET_FUNCTION, wmi.encode_u32(4)),
+                         r"\_SB.PCI0.WMID.WMAA 0 2 b04000000")
+
+
 class GpuOverclockTest(unittest.TestCase):
     def setUp(self):
         FakeNvml.calls = []
@@ -237,12 +255,12 @@ class GpuOverclockTest(unittest.TestCase):
         self.assertEqual(FakeNvml.calls, [])               # nunca despierta la GPU
         self.oc.update("active", True, prof)
         self.oc.update("active", True, prof)               # sin cambios: no repite
-        self.assertEqual(FakeNvml.calls, [(150, 400)])
+        self.assertEqual(FakeNvml.calls, [(50, 200)])
         self.oc.update("active", False, prof)              # en batería -> 0
         self.assertEqual(FakeNvml.calls[-1], (0, 0))
         self.oc.update("suspended", True, prof)
         self.oc.update("active", True, prof)               # al despertar se reaplica
-        self.assertEqual(FakeNvml.calls[-1], (150, 400))
+        self.assertEqual(FakeNvml.calls[-1], (50, 200))
         self.oc.reset("active")
         self.assertEqual(FakeNvml.calls[-1], (0, 0))
 

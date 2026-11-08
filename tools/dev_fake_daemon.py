@@ -32,6 +32,11 @@ class FakeWmi:
     def capabilities(self): return {"win_key": True, "lcd_overdrive": True, "fan_rpm": True}
     def set_win_key(self, e): pass
     def set_lcd_overdrive(self, e): pass
+    usb = {"enabled": True, "threshold": 30}
+    def get_usb_charge(self): return dict(self.usb)
+    def set_usb_charge(self, e, t):
+        self.usb = {"enabled": e, "threshold": t}
+        return dict(self.usb)
     def read_rpm(self): return {}
 
 

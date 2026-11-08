@@ -24,6 +24,10 @@ def main(argv=None):
     c.add_argument("state", choices=["on", "off"])
     w = sub.add_parser("winkey", help="Activar/desactivar la tecla Windows")
     w.add_argument("state", choices=["on", "off"])
+    u = sub.add_parser("usb", help="Carga USB con el equipo apagado")
+    u.add_argument("state", choices=["on", "off"])
+    u.add_argument("threshold", nargs="?", type=int, choices=[10, 20, 30],
+                   help="En batería, detener la carga al llegar a este porcentaje")
     pr = sub.add_parser("profile", help="Seleccionar perfil")
     pr.add_argument("name")
     sub.add_parser("profiles", help="Listar perfiles")
@@ -46,6 +50,9 @@ def main(argv=None):
                 print(f"  {fan.upper()}: {mode:<18} temp {fmt(smp.get(fan + '_temp'), '°C'):>7}"
                       f"  rpm {fmt(smp.get(fan + '_rpm'))}")
             print(f"CoolBoost: {'sí' if s['profile']['coolboost'] else 'no'}")
+            if s.get("usb_charge"):
+                print(f"Carga USB apagado: {'sí' if s['usb_charge']['enabled'] else 'no'}"
+                      f" (batería mínima {s['usb_charge']['threshold']}%)")
             for e in s.get("errors", [])[-3:]:
                 print("! " + e["message"])
         elif a.cmd == "reapply":
@@ -65,6 +72,12 @@ def main(argv=None):
             request("set_win_key", enabled=a.state == "on")
             print("Tecla Windows " + ("activada." if a.state == "on" else
                                       "desactivada (Super enviará Play/Pausa). Se mantiene tras reiniciar."))
+        elif a.cmd == "usb":
+            cur = request("status").get("usb_charge") or {}
+            r = request("set_usb_charge", enabled=a.state == "on",
+                        threshold=a.threshold or cur.get("threshold", 30))["usb_charge"]
+            print(f"Carga USB con el equipo apagado: {'activada' if r['enabled'] else 'desactivada'}"
+                  f" (en batería se detiene al {r['threshold']}%).")
         elif a.cmd == "profile":
             request("profile_select", name=a.name)
             print(f"Perfil «{a.name}» aplicado.")

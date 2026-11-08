@@ -17,6 +17,14 @@ from . import HardwareError, clamp_percent
 ACPI_CALL = "/proc/acpi/call"
 DEFAULT_METHOD_PATH = r"\_SB.PCI0.WMID.WMBH"
 
+# Interfaz APGeAction (GUID 61EF69EA-..., objeto "AA"): la usa Acer Quick Access.
+APGE_METHOD_PATH = r"\_SB.PCI0.WMID.WMAA"
+APGE_SET_FUNCTION = 1           # uiInput uint64 -> uiOutput uint32
+APGE_GET_FUNCTION = 2           # uiInput uint32 -> uiOutput uint64
+APGE_USB_CHARGE = 4
+USB_CHARGE_ON, USB_CHARGE_OFF = 15, 31
+USB_CHARGE_THRESHOLDS = (10, 20, 30)
+
 # WmiMethodId según el MOF de la BIOS (AcerGamingFunction)
 DEFAULT_METHOD_IDS = {
     "SetGamingProfile": 1,          # tecla Windows, LCD overdrive
@@ -91,6 +99,21 @@ def lcd_overdrive_arg(enabled):
 
 def sysinfo_arg(sensor):
     return 1 | (sensor << 8)
+
+
+def usb_charge_arg(enabled, threshold):
+    """Argumento de SetFunction, igual que el plugin UsbCharge de Quick Access."""
+    if threshold not in USB_CHARGE_THRESHOLDS:
+        raise ValueError(f"Umbral de batería inválido: {threshold}")
+    return APGE_USB_CHARGE | ((USB_CHARGE_ON if enabled else USB_CHARGE_OFF) << 8) | (threshold << 16)
+
+
+def parse_usb_charge(result):
+    if result & 0xFF:
+        raise HardwareError(f"GetFunction devolvió error 0x{result & 0xFF:02X}")
+    threshold = (result >> 16) & 0xFF
+    return {"enabled": (result >> 8) & 0xFF == USB_CHARGE_ON,
+            "threshold": threshold if threshold in USB_CHARGE_THRESHOLDS else 30}
 
 
 # --- backend ------------------------------------------------------------
@@ -174,6 +197,22 @@ class WmiBackend:
             except (HardwareError, OSError):
                 pass
         return out
+
+    # --- carga USB con el equipo apagado ---------------------------------
+    def _apge(self, method_id, payload):
+        with open(self.call_path, "w") as f:
+            f.write(build_call(APGE_METHOD_PATH, method_id, payload))
+        with open(self.call_path) as f:
+            return parse_result(f.read())
+
+    def get_usb_charge(self):
+        return parse_usb_charge(self._apge(APGE_GET_FUNCTION, encode_u32(APGE_USB_CHARGE)))
+
+    def set_usb_charge(self, enabled, threshold):
+        status = self._apge(APGE_SET_FUNCTION, encode_u64(usb_charge_arg(enabled, threshold)))
+        if status & 0xFF:
+            raise HardwareError(f"SetFunction devolvió error 0x{status & 0xFF:02X}")
+        return self.get_usb_charge()
 
     # --- teclado / pantalla ---------------------------------------------
     def set_win_key(self, enabled):

@@ -166,6 +166,7 @@ class Daemon:
         self.socket_path = socket_path
         self.hw = Hardware(self.config.settings)
         self.gpu_oc = GpuOverclock()
+        self.usb_charge = self._read_usb_charge()
         self.curves = {fan: self._new_controller() for fan in FANS}
         self.curve_failures = {fan: 0 for fan in FANS}
         self.cpu_usage = sensors.CpuUsage()
@@ -175,6 +176,14 @@ class Daemon:
         self.running = True
         self.reapply_requested = False
         self.sel = selectors.DefaultSelector()
+
+    def _read_usb_charge(self):
+        """Lo guarda la propia BIOS: se lee al iniciar y no se reescribe en cada arranque."""
+        try:
+            return self.hw.wmi.get_usb_charge() if self.hw.wmi else None
+        except (HardwareError, OSError, AttributeError) as e:
+            log.info("Carga USB con el equipo apagado no disponible: %s", e)
+            return None
 
     def _new_controller(self):
         s = self.config.settings
@@ -288,7 +297,8 @@ class Daemon:
                 pass
         return {
             "version": __version__,
-            "capabilities": self.hw.capabilities(),
+            "capabilities": {**self.hw.capabilities(), "usb_charge": self.usb_charge is not None},
+            "usb_charge": self.usb_charge,
             "active_profile": self.config.active_name,
             "profile": prof,
             "profiles": list(self.config.data["profiles"]),
@@ -350,6 +360,10 @@ class Daemon:
             if state is None:
                 state = sensors.gpu_info().get("state")
             self.gpu_oc.update(state, smp.get("on_ac", sensors.on_ac()), prof["gpu_oc"], force=True)
+        elif cmd == "set_usb_charge":
+            if self.usb_charge is None:
+                raise HardwareError("Función no disponible en este equipo: usb_charge")
+            self.usb_charge = self.hw.wmi.set_usb_charge(bool(req["enabled"]), int(req["threshold"]))
         elif cmd == "set_win_key":
             self._need("win_key")
             self.hw.wmi.set_win_key(bool(req["enabled"]))

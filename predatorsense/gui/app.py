@@ -362,15 +362,14 @@ class OverclockPage(Page):
     def __init__(self, win):
         super().__init__(win, "Overclock de GPU")
         self.layout_.addWidget(label(
-            "Experimental. El PredatorSense oficial marcaba el overclock como no soportado en el PH315-51, "
-            "así que estos niveles son propios y conservadores. Solo se aplica con el cargador conectado; "
-            "en batería se vuelve a Normal automáticamente.", "warn"))
+            "Solo se aplica con el cargador conectado; en batería se vuelve a Normal automáticamente.", "warn"))
         c = card()
         v = QVBoxLayout(c)
         head = QHBoxLayout()
         head.addWidget(label("Nivel", "h2"))
         head.addStretch()
         self.state = label("", "muted")
+        self.state.setWordWrap(False)
         head.addWidget(self.state)
         v.addLayout(head)
         row = QHBoxLayout()
@@ -386,6 +385,7 @@ class OverclockPage(Page):
             row.addWidget(b)
         v.addLayout(row)
         self.preset = label("", "muted")
+        self.preset.setWordWrap(False)
         v.addWidget(self.preset)
         self.layout_.addWidget(c)
 
@@ -440,8 +440,8 @@ class OverclockPage(Page):
             s.setEnabled(enabled)
         self.apply_btn.setEnabled(enabled)
         levels = oc.get("levels") or {}
-        self.preset.setText("   ·   ".join(f"{t}: núcleo {levels[l][0]:+d} / memoria {levels[l][1]:+d} MHz"
-                                           for l, t in OC_LABELS if l in levels))
+        self.preset.setText("Núcleo / memoria en MHz   ·   " + "   ·   ".join(
+            f"{t}: {levels[l][0]:+d} / {levels[l][1]:+d}" for l, t in OC_LABELS if l in levels and l != "normal"))
         smp = status.get("sample") or {}
         applied = oc.get("applied")
         if not enabled:
@@ -602,6 +602,22 @@ class SettingsPage(Page):
         self.src.activated.connect(lambda _: self.set(gpu_curve_source=self.src.currentData()))
         g.addWidget(self.src, r, 1); r += 1
         self.layout_.addWidget(c)
+        self.usb_card = card()
+        u = QGridLayout(self.usb_card)
+        self.usb = QCheckBox("USB con carga en estado apagado")
+        self.usb.setToolTip("Carga dispositivos por el puerto USB designado aunque la laptop "
+                            "esté apagada o en hibernación, también con batería.")
+        self.usb.clicked.connect(lambda _: self.set_usb())
+        u.addWidget(self.usb, 0, 0, 1, 2)
+        self.usb_label = QLabel("Con alimentación de batería, detener la carga cuando la batería alcance:")
+        self.usb_label.setWordWrap(True)
+        u.addWidget(self.usb_label, 1, 0)
+        self.usb_level = QComboBox()
+        for pct in (10, 20, 30):
+            self.usb_level.addItem(f"{pct}%", pct)
+        self.usb_level.activated.connect(lambda _: self.set_usb())
+        u.addWidget(self.usb_level, 1, 1)
+        self.layout_.addWidget(self.usb_card)
         self.caps = label("", "muted")
         cc = card()
         QVBoxLayout(cc).addWidget(self.caps)
@@ -610,6 +626,9 @@ class SettingsPage(Page):
 
     def set(self, **kw):
         self.call("settings_update", settings=kw)
+
+    def set_usb(self):
+        self.call("set_usb_charge", enabled=self.usb.isChecked(), threshold=self.usb_level.currentData())
 
     def toggle_autostart(self, on):
         try:
@@ -633,6 +652,13 @@ class SettingsPage(Page):
         self.src.setCurrentIndex(0 if s["gpu_curve_source"] == "gpu" else 1)
         for w in (self.boot, self.unit, self.hyst, self.interval, self.interp, self.src):
             w.blockSignals(False)
+        usb = status.get("usb_charge")
+        self.usb_card.setVisible(usb is not None)
+        if usb:
+            self.usb.setChecked(usb["enabled"])
+            self.usb_level.setCurrentIndex(self.usb_level.findData(usb["threshold"]))
+            for w in (self.usb_label, self.usb_level):
+                w.setVisible(usb["enabled"])
         caps = status["capabilities"]
         yn = lambda b: "sí" if b else "no"  # noqa: E731
         self.caps.setText(
@@ -652,6 +678,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(icon)
         self.resize(1080, 760)
         self.status = None
+        self.tray = None
         self.history = []
         root = QWidget()
         root.setObjectName("root")
@@ -738,8 +765,24 @@ class MainWindow(QMainWindow):
         if was_offline:
             self.stack.setCurrentIndex(self.nav.currentRow())
 
+    def update_tray_tooltip(self, st):
+        if not self.tray:
+            return
+        s = st.get("sample") or {}
+        unit = st["settings"]["temp_unit"]
+        def line(name, key):
+            rpm = s.get(f"{key}_rpm")
+            speed = f"{rpm} RPM" if rpm is not None else "— RPM"
+            if key == "gpu" and s.get("gpu_state") != "active":
+                return f"{name}: en reposo · {speed}"
+            usage = s.get(f"{key}_usage")
+            pct = f"{usage:.0f}%" if usage is not None else "—"
+            return f"{name}: {fmt_temp(s.get(f'{key}_temp'), unit)} · uso {pct} · {speed}"
+        self.tray.setToolTip(line("CPU", "cpu") + "\n" + line("GPU", "gpu"))
+
     def apply_status(self, st):
         self.status = st
+        self.update_tray_tooltip(st)
         if self.stack.currentWidget() is self.offline:
             self.stack.setCurrentIndex(self.nav.currentRow())
         self.pages[self.nav.currentRow()].refresh(st)
@@ -809,7 +852,9 @@ def main():
         tray.setToolTip(APP_NAME)
         tray.activated.connect(lambda r: (win.show(), win.raise_()) if r == QSystemTrayIcon.ActivationReason.Trigger else None)
         tray.show()
-        app.tray = tray
+        app.tray = win.tray = tray
+        if win.status:
+            win.update_tray_tooltip(win.status)
         app.setQuitOnLastWindowClosed(False)  # cerrar la ventana la deja en la bandeja
     if "--hidden" not in sys.argv or not getattr(app, "tray", None):
         win.show()   # sin bandeja disponible, --hidden dejaría la app invisible

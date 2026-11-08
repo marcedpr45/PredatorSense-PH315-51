@@ -5,10 +5,9 @@ Más rápido, Turbo). En Linux lo equivalente sin X11 (funciona en Wayland) son
 los offsets de la curva V/F de NVML: nvmlDeviceSetGpcClkVfOffset (núcleo) y
 nvmlDeviceSetMemClkVfOffset (memoria). Requiere root.
 
-Nota: en el PH315-51 el PredatorSense oficial marcaba GPU_OC_Support = 0 en el
-registro, así que estos niveles NO son los de Acer: son valores propios y
-conservadores. Los offsets se pierden al apagar la GPU o reiniciar; el
-servicio los vuelve a aplicar cuando la GPU se despierta.
+Los niveles son los del PredatorSense oficial para esta GPU (PredatorSense.ini,
+PCI\\VEN_10DE&DEV_1C20&SUBSYS_12631025). Los offsets se pierden al apagar la GPU
+o reiniciar; el servicio los vuelve a aplicar cuando la GPU se despierta.
 """
 
 import ctypes
@@ -19,8 +18,10 @@ NVML_ERRORS = {1: "no inicializado", 2: "argumento inválido", 3: "no soportado"
                15: "GPU perdida", 999: "error desconocido"}
 CLOCK_GRAPHICS, CLOCK_MEM = 0, 2
 
-# Niveles: (núcleo MHz, memoria MHz). Valores propios, conservadores.
-LEVELS = {"normal": (0, 0), "faster": (75, 200), "turbo": (150, 400)}
+# Niveles: (núcleo, memoria) en MHz, en las unidades de NVML. Acer da la memoria en
+# la escala de NvAPI (+50/+100 sobre 4004 MHz); NVML cuenta la tasa de transferencia,
+# el doble: medido en esta GPU, un offset de +100 sube el reloj de 4006 a 4050 MHz.
+LEVELS = {"normal": (0, 0), "faster": (25, 100), "turbo": (50, 200)}
 CUSTOM_LIMITS = {"core": (-200, 250), "mem": (-500, 800)}
 
 

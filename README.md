@@ -28,11 +28,13 @@ Windows: **la configuración ahora se guarda y se vuelve a aplicar**.
 | **Supervisión**: temperaturas, uso de CPU/GPU, RPM reales, gráficas | ✅ |
 | **Tecla Windows** activar/desactivar | ✅ Probado |
 | **LCD Overdrive** | ✅ |
-| **Overclock de GPU** Normal / Más rápido / Turbo / Personalizado (experimental) | ✅ NVML, solo con cargador |
+| **USB con carga en estado apagado**, con límite de batería de 10/20/30 % (como Acer Quick Access) | ✅ |
+| **Overclock de GPU** con los niveles oficiales de Acer: Normal / Más rápido / Turbo, más Personalizado | ✅ NVML, solo con cargador |
 | **Perfiles**: crear, renombrar, borrar, importar/exportar | ✅ |
 | **Reaplicar al arrancar y al volver de suspensión** | ✅ |
 | **Abrir al iniciar sesión** (minimizado en la bandeja), activable desde Ajustes | ✅ |
-| Icono en la bandeja y `predatorsense-ctl` para la terminal | ✅ |
+| Icono en la bandeja con temperatura, uso y RPM de CPU y GPU al pasar el cursor | ✅ |
+| `predatorsense-ctl` para la terminal | ✅ |
 | Perfil de energía (`platform_profile`) | ❌ La BIOS no tiene los métodos WMI 22/23 que usa el kernel; se oculta |
 | Iluminación RGB | ❌ El PH315-51 no tiene teclado RGB |
 
@@ -86,6 +88,7 @@ predatorsense-ctl fan all max          # auto | max | custom <0-100>
 predatorsense-ctl fan cpu custom 60
 predatorsense-ctl coolboost on
 predatorsense-ctl winkey on            # off = Super envía Play/Pausa
+predatorsense-ctl usb on 20            # carga USB apagado; en batería se detiene al 20 %
 predatorsense-ctl profiles
 predatorsense-ctl profile "Juego"
 ```
@@ -116,20 +119,24 @@ comprimido con MRCI y se lee con `tools/bmof_decompress.py`:
 | 14 | SetGamingFanBehavior | modo de ventilador |
 | 16 | SetGamingFanSpeed | velocidad de ventilador |
 
+La carga USB con el equipo apagado usa otra interfaz, `APGeAction` (`\_SB.PCI0.WMID.WMAA`), igual que
+Acer Quick Access: `SetFunction` (1) y `GetFunction` (2), función 4. La propia BIOS guarda el valor.
+
 Para revisarlos en otra versión de BIOS: `sudo tools/probe.sh` (solo lectura).
 
 ### Overclock de GPU
 
 Windows usaba NvAPI (`SetPstates20`). Aquí se usan los offsets V/F de NVML, que funcionan en Wayland.
-El PredatorSense oficial marcaba `GPU_OC_Support = 0` en este modelo, así que los niveles son
-propios y conservadores:
+Los niveles son los de `PredatorSense.ini` del PredatorSense oficial para esta GPU
+(`DEV_1C20&SUBSYS_12631025`). NVML cuenta la memoria en tasa de transferencia, el doble que NvAPI,
+así que los +50/+100 MHz de Acer equivalen aquí a +100/+200:
 
-| Nivel | Núcleo | Memoria |
-|---|---|---|
-| Normal | +0 MHz | +0 MHz |
-| Más rápido | +75 MHz | +200 MHz |
-| Turbo | +150 MHz | +400 MHz |
-| Personalizado | −200…+250 MHz | −500…+800 MHz |
+| Nivel | Núcleo | Memoria (NVML) | Memoria (Acer) |
+|---|---|---|---|
+| Normal | +0 MHz | +0 MHz | +0 MHz |
+| Más rápido | +25 MHz | +100 MHz | +50 MHz |
+| Turbo | +50 MHz | +200 MHz | +100 MHz |
+| Personalizado | −200…+250 MHz | −500…+800 MHz | — |
 
 Solo se aplica con el cargador conectado y se reaplica cuando la GPU sale de reposo.
 
